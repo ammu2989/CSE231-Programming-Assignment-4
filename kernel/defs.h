@@ -9,6 +9,7 @@ struct spinlock;
 struct sleeplock;
 struct stat;
 struct superblock;
+struct schedinfo;//add-on 
 
 // bio.c
 void            binit(void);
@@ -103,6 +104,10 @@ void            yield(void);
 int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
 int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 void            procdump(void);
+int             fill_schedinfo(int, struct schedinfo*);
+int             set_slice(int, int);
+int             sched_tick(void);
+extern int      forkwatch_on;
 
 // swtch.S
 void            swtch(struct context*, struct context*);

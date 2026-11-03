@@ -5,10 +5,13 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "schedinfo.h"
 
 struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
+
+int forkwatch_on;      // 1 = print a line when a new process first runs Q3
 
 struct proc *initproc;
 
@@ -145,6 +148,15 @@ found:
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
+//schedulling initialization (q1-q3)
+  p->nsched = 0;
+  p->rticks = 0;
+  p->lastcpu = 0;
+  p->slice = 1;      // default slice is 1 tick (the old xv6 behaviour)
+  p->used = 0;
+  p->ctime = 0;
+  p->ftime = 0;
+  p->firstcpu = 0;
 
   return p;
 }
@@ -261,6 +273,11 @@ kfork(void)
   int i, pid;
   struct proc *np;
   struct proc *p = myproc();
+//Q2 Children inherit the slice 
+  int slice;
+  acquire(&p->lock);
+  slice = p->slice;        // read the parent's slice first...
+  release(&p->lock);
 
   // Allocate process.
   if ((np = allocproc()) == 0) {
@@ -289,6 +306,7 @@ kfork(void)
 
   safestrcpy(np->name, p->name, sizeof(p->name));
 
+  np->slice = slice;       // ...and give it to the child Q2
   pid = np->pid;
 
   release(&np->lock);
@@ -298,6 +316,7 @@ kfork(void)
   release(&wait_lock);
 
   acquire(&np->lock);
+  np->ctime = ticks;         // the moment the child becomes runnable
   np->state = RUNNABLE;
   release(&np->lock);
 
@@ -449,6 +468,9 @@ scheduler(void)
         // to release its lock and then reacquire it
         // before jumping back to us.
         p->state = RUNNING;
+        p->nsched++;              // one more time this process was picked
+        p->lastcpu = cpuid();     // the hart that picked it
+        p->used = 0;              // start a fresh time slice (needed for Q2)
         c->proc = p;
         swtch(&c->context, &p->context);
 
@@ -468,7 +490,24 @@ scheduler(void)
     }
   }
 }
+// Called on every timer interrupt that hits a running process.
+// Returns 1 if the process should give up the CPU now.
+int
+sched_tick(void)
+{
+  struct proc *p = myproc();
+  int again=0;
 
+  acquire(&p->lock);
+  p->rticks++;
+  p->used++;                    // Q2: one more tick of this slice used
+  if(p->used >= p->slice)       // slice finished?
+    again = 1;
+
+  release(&p->lock);
+
+  return again;     // for now: yield on every tick (the old behaviour)
+}
 // Switch to scheduler.  Must hold only p->lock
 // and have changed proc->state. Saves and restores
 // intena because intena is a property of this
@@ -515,9 +554,22 @@ forkret(void)
   extern char userret[];
   static int first = 1;
   struct proc *p = myproc();
+//Q3 Record ftime and firstcpu in forkret
+  p->ftime = ticks;
+  p->firstcpu = cpuid();
 
+  // Copy what we want to print, so we can release the lock first.
+  int pid = p->pid;
+  int hart = p->firstcpu;
+  int waited = p->ftime - p->ctime;
+  
   // Still holding p->lock from scheduler.
   release(&p->lock);
+
+    // Print only AFTER the lock is released.
+  if(forkwatch_on)
+    printk("pid %d: first run on hart %d, %d ticks after fork\n",
+           pid, hart, waited);
 
   if (first) {
     first = 0;
@@ -701,3 +753,47 @@ procdump(void)
     printk("\n");
   }
 }
+// Copy scheduling info of process `pid` into *si.
+// Returns 0 on success, -1 if there is no such process.
+int
+fill_schedinfo(int pid, struct schedinfo *si)
+{
+  struct proc *p;
+
+  for(p = proc; p < &proc[NPROC]; p++){
+    acquire(&p->lock);
+    if(p->state != UNUSED && p->pid == pid){   // zombies count too
+      memset(si, 0, sizeof(*si));              // unimplemented fields stay 0
+      si->pid = p->pid;
+      si->state = p->state;
+      si->nsched = p->nsched;
+      si->rticks = p->rticks;
+      si->lastcpu = p->lastcpu;
+      si->slice = p->slice;
+      si->ctime = p->ctime;
+      si->ftime = p->ftime;
+      si->firstcpu = p->firstcpu;
+      release(&p->lock);
+      return 0;
+    }
+    release(&p->lock);
+  }
+  return -1;
+}
+// Set the time slice of process `pid`. Returns 0, or -1 if no such process.
+int
+set_slice(int pid, int n)
+{
+  struct proc *p;
+
+  for(p = proc; p < &proc[NPROC]; p++){
+    acquire(&p->lock);
+    if(p->state != UNUSED && p->pid == pid){
+      p->slice = n;
+      release(&p->lock);
+      return 0;
+    }
+    release(&p->lock);
+  }
+  return -1;
+} 

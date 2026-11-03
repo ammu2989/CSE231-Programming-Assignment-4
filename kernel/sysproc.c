@@ -6,6 +6,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "vm.h"
+#include "schedinfo.h"
 
 uint64
 sys_exit(void)
@@ -109,4 +110,58 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+//Q1 getcpu
+uint64
+sys_getcpu(void)
+{
+  // cpuid() is only safe with interrupts off, so switch them off briefly.
+  push_off();
+  int id = cpuid();
+  pop_off();
+  return id;
+}
+uint64
+sys_schedinfo(void)
+{
+  int pid;
+  uint64 addr;
+  struct schedinfo si;
+
+  argint(0, &pid);
+  argaddr(1, &addr);
+
+  if(fill_schedinfo(pid, &si) < 0)       // lock is already released here
+    return -1;
+
+  // Newer xv6 copyout takes an extra argument: the process size.
+  if(copyout(myproc()->pagetable, myproc()->sz, addr, (char *)&si, sizeof(si)) < 0)
+    return -1;
+  return 0;
+}
+// Q2
+uint64
+sys_setslice(void)
+{
+  int pid, n;
+
+  argint(0, &pid);
+  argint(1, &n);
+
+  if(n < 1 || n > 100)            // only 1..100 is allowed
+    return -1;
+  if(pid == 0)                    // pid 0 means "the calling process"
+    pid = myproc()->pid;
+  return set_slice(pid, n);
+}
+//Q3
+uint64
+sys_forkwatch(void)
+{
+  int on;
+
+  argint(0, &on);
+  // Swap in the new value and return the old one in one atomic step.
+  return __atomic_exchange_n(&forkwatch_on, on != 0, __ATOMIC_SEQ_CST);
 }

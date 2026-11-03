@@ -101,4 +101,13 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+    // scheduling fields (Q1-Q3)
+  int nsched;    // how many times a scheduler picked this process
+  int rticks;    // timer ticks that arrived while it was RUNNING
+  int lastcpu;   // hart it last ran on
+  int slice;     // time slice, in ticks
+  int used;      // ticks used so far in the current slice
+  int ctime;     // tick when fork made it runnable
+  int ftime;     // tick when it first ran
+  int firstcpu;  // hart it first ran on
 };
