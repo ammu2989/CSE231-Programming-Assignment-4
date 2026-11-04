@@ -30,6 +30,11 @@ int getcpu(void);
 int schedinfo(int, struct schedinfo *);
 int setslice(int, int);
 int forkwatch(int);
+int sched_setaffinity(int, int);
+int sched_getaffinity(int);
+int schedpolicy(int);
+int setprio(int, int);
+int getpids(int *, int);
 
 // ulib.c
 int stat(const char *, struct stat *);
