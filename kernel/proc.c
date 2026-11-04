@@ -11,8 +11,10 @@ struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
 
-int forkwatch_on;      // 1 = print a line when a new process first runs Q3
-
+int forkwatch_on;  // 1 = print a line when a new process first runs Q3
+int bootmask = 0;                        // bit i set once hart i has booted (Q4)
+int sched_policy = POLICY_RR;            // Q5
+static int rrcursor[3] = {-1, -1, -1};   // last slot picked per priority level (Q5)
 struct proc *initproc;
 
 int nextpid = 1;
@@ -157,7 +159,9 @@ found:
   p->ctime = 0;
   p->ftime = 0;
   p->firstcpu = 0;
-
+  p->affinity = -1;     // "all harts". Hart 0 makes init before the others boot,
+                        // so bootmask can't be used yet. Reported as affinity & bootmask.
+  p->prio = PRIO_NORMAL;
   return p;
 }
 
@@ -279,6 +283,13 @@ kfork(void)
   slice = p->slice;        // read the parent's slice first...
   release(&p->lock);
 
+   int paff, pprio;
+  acquire(&p->lock);
+  paff = p->affinity;
+  pprio = p->prio;
+  release(&p->lock);
+
+
   // Allocate process.
   if ((np = allocproc()) == 0) {
     return -1;
@@ -307,6 +318,8 @@ kfork(void)
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   np->slice = slice;       // ...and give it to the child Q2
+  np->affinity = paff;
+  np->prio = pprio;
   pid = np->pid;
 
   release(&np->lock);
@@ -436,7 +449,24 @@ kwait(uint64 addr)
     acquire(&wait_lock);
   }
 }
+// Call with p->lock held and p RUNNABLE.
+static void
+run(struct proc *p, struct cpu *c)
+{
+  p->state = RUNNING;
+  p->nsched++;              // one more time this process was picked
+  p->lastcpu = cpuid();     // the hart that picked it
+  p->used = 0;              // start a fresh time slice (needed for Q2)
+  c->proc = p;
+  swtch(&c->context, &p->context);
 
+  // Don't re-enable interrupts on release.
+  mycpu()->intena = 0;
+
+  // Process is done running for now.
+  // It should have changed its p->state before coming back.
+  c->proc = 0;
+}
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
 // Scheduler never returns.  It loops, doing:
@@ -449,6 +479,7 @@ scheduler(void)
 {
   struct proc *p;
   struct cpu *c = mycpu();
+  int bit = 1 << cpuid();
 
   c->proc = 0;
   for (;;) {
@@ -461,28 +492,44 @@ scheduler(void)
     intr_off();
 
     int found = 0;
-    for (p = proc; p < &proc[NPROC]; p++) {
-      acquire(&p->lock);
-      if (p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        p->state = RUNNING;
-        p->nsched++;              // one more time this process was picked
-        p->lastcpu = cpuid();     // the hart that picked it
-        p->used = 0;              // start a fresh time slice (needed for Q2)
-        c->proc = p;
-        swtch(&c->context, &p->context);
 
-        // Don't re-enable interrupts on release.
-        mycpu()->intena = 0;
-
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
-        found = 1;
+    if (sched_policy == POLICY_RR) {
+      // original round-robin, plus the affinity check (Q4)
+      for (p = proc; p < &proc[NPROC]; p++) {
+        acquire(&p->lock);
+        if (p->state == RUNNABLE && (p->affinity & bit)) {
+          run(p, c);
+          found = 1;
+        }
+        release(&p->lock);
       }
-      release(&p->lock);
+    } else {
+      // Q5 pass 1: best priority level among allowed RUNNABLE processes.
+      // One lock at a time, so two harts can't deadlock.
+      int best = 3;
+      for (p = proc; p < &proc[NPROC] && best > 0; p++) {
+        acquire(&p->lock);
+        if (p->state == RUNNABLE && (p->affinity & bit) && p->prio < best)
+          best = p->prio;
+        release(&p->lock);
+      }
+      // Q5 pass 2: round-robin inside that level, starting after the last slot picked.
+      // The winner is re-checked under its own lock before it runs.
+      if (best < 3) {
+        for (int k = 1; k <= NPROC; k++) {
+          int i = (rrcursor[best] + k) % NPROC;
+          p = &proc[i];
+          acquire(&p->lock);
+          if (p->state == RUNNABLE && p->prio == best && (p->affinity & bit)) {
+            rrcursor[best] = i;
+            run(p, c);
+            found = 1;
+            release(&p->lock);
+            break;
+          }
+          release(&p->lock);
+        }
+      }
     }
     if (found == 0) {
       // nothing to run; stop running on this core until an interrupt.
@@ -490,10 +537,7 @@ scheduler(void)
     }
   }
 }
-// Called on every timer interrupt that hits a running process.
-// Returns 1 if the process should give up the CPU now.
-int
-sched_tick(void)
+int sched_tick(void)
 {
   struct proc *p = myproc();
   int again=0;
@@ -502,6 +546,8 @@ sched_tick(void)
   p->rticks++;
   p->used++;                    // Q2: one more tick of this slice used
   if(p->used >= p->slice)       // slice finished?
+    again = 1;
+  if(!(p->affinity & (1 << cpuid())))   // Q4: this hart is no longer allowed
     again = 1;
 
   release(&p->lock);
@@ -773,6 +819,9 @@ fill_schedinfo(int pid, struct schedinfo *si)
       si->ctime = p->ctime;
       si->ftime = p->ftime;
       si->firstcpu = p->firstcpu;
+      si->affinity = p->affinity & bootmask;
+      si->prio = p->prio;
+      safestrcpy(si->name, p->name, sizeof(si->name));
       release(&p->lock);
       return 0;
     }
@@ -797,3 +846,106 @@ set_slice(int pid, int n)
   }
   return -1;
 } 
+// Q4
+int
+ksetaffinity(int pid, int mask)
+{
+  struct proc *p, *me = myproc();
+  int mustmove;
+
+  if ((mask & bootmask) == 0)
+    return -1;
+  if (pid == 0)
+    pid = me->pid;
+
+  for (p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if (p->state != UNUSED && p->pid == pid) {
+      p->affinity = mask;
+      // interrupts are off while the lock is held, so cpuid() is safe
+      mustmove = (p == me) && !(mask & (1 << cpuid()));
+      release(&p->lock);
+      if (mustmove)
+        yield();      // only allowed harts will pick us up again
+      return 0;
+    }
+    release(&p->lock);
+  }
+  return -1;
+}
+
+int
+kgetaffinity(int pid)
+{
+  struct proc *p;
+  int m;
+
+  if (pid == 0)
+    pid = myproc()->pid;
+  for (p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if (p->state != UNUSED && p->pid == pid) {
+      m = p->affinity & bootmask;
+      release(&p->lock);
+      return m;
+    }
+    release(&p->lock);
+  }
+  return -1;
+}
+
+// Q5
+int
+kschedpolicy(int policy)
+{
+  if (policy == -1)
+    return sched_policy;
+  if (policy != POLICY_RR && policy != POLICY_PRIO)
+    return -1;
+  return __atomic_exchange_n(&sched_policy, policy, __ATOMIC_SEQ_CST);
+}
+
+int
+ksetprio(int pid, int prio)
+{
+  struct proc *p, *me = myproc();
+
+  if (prio < PRIO_HIGH || prio > PRIO_LOW)
+    return -1;
+  if (pid == 0)
+    pid = me->pid;
+
+  for (p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if (p->state != UNUSED && p->pid == pid) {
+      p->prio = prio;
+      release(&p->lock);
+      if (sched_policy == POLICY_PRIO)
+        yield();      // switch inside setprio, not at the next tick
+      return 0;
+    }
+    release(&p->lock);
+  }
+  return -1;
+}
+
+// Bonus
+int
+kgetpids(uint64 addr, int max)
+{
+  int buf[NPROC];
+  int n = 0;
+  struct proc *p;
+
+  for (p = proc; p < &proc[NPROC] && n < max; p++) {
+    acquire(&p->lock);
+    if (p->state != UNUSED)
+      buf[n++] = p->pid;
+    release(&p->lock);
+  }
+  // never copyout while holding a process lock
+  if (n > 0 && copyout(myproc()->pagetable, myproc()->sz, addr, (char *)buf,
+                       n * sizeof(int)) < 0)
+    return -1;
+  return n;
+}
