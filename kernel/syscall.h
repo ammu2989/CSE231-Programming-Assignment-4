@@ -25,3 +25,8 @@
 #define SYS_schedinfo  24
 #define SYS_setslice   25
 #define SYS_forkwatch  26
+#define SYS_sched_setaffinity 27
+#define SYS_sched_getaffinity 28
+#define SYS_schedpolicy       29
+#define SYS_setprio           30
+#define SYS_getpids           31
