@@ -41,5 +41,6 @@ main()
     plicinithart(); // ask PLIC for device interrupts
   }
 
+  __atomic_fetch_or(&bootmask, 1 << cpuid(), __ATOMIC_SEQ_CST);
   scheduler();
 }
