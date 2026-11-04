@@ -108,6 +108,13 @@ int             fill_schedinfo(int, struct schedinfo*);
 int             set_slice(int, int);
 int             sched_tick(void);
 extern int      forkwatch_on;
+int             ksetaffinity(int, int);
+int             kgetaffinity(int);
+int             kschedpolicy(int);
+int             ksetprio(int, int);
+int             kgetpids(uint64, int);
+extern int      bootmask;
+extern int      sched_policy;
 
 // swtch.S
 void            swtch(struct context*, struct context*);
