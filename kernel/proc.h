@@ -110,4 +110,7 @@ struct proc {
   int ctime;     // tick when fork made it runnable
   int ftime;     // tick when it first ran
   int firstcpu;  // hart it first ran on
+// Q4/Q5
+  int affinity;  // CPU mask (bit i = hart i)
+  int prio;      // PRIO_HIGH / NORMAL / LOW
 };
