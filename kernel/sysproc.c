@@ -165,3 +165,49 @@ sys_forkwatch(void)
   // Swap in the new value and return the old one in one atomic step.
   return __atomic_exchange_n(&forkwatch_on, on != 0, __ATOMIC_SEQ_CST);
 }
+// Q4
+uint64
+sys_sched_setaffinity(void)
+{
+  int pid, mask;
+  argint(0, &pid);
+  argint(1, &mask);
+  return ksetaffinity(pid, mask);
+}
+
+uint64
+sys_sched_getaffinity(void)
+{
+  int pid;
+  argint(0, &pid);
+  return kgetaffinity(pid);
+}
+
+// Q5
+uint64
+sys_schedpolicy(void)
+{
+  int policy;
+  argint(0, &policy);
+  return kschedpolicy(policy);
+}
+
+uint64
+sys_setprio(void)
+{
+  int pid, prio;
+  argint(0, &pid);
+  argint(1, &prio);
+  return ksetprio(pid, prio);
+}
+
+// Bonus
+uint64
+sys_getpids(void)
+{
+  uint64 addr;
+  int max;
+  argaddr(0, &addr);
+  argint(1, &max);
+  return kgetpids(addr, max);
+}
